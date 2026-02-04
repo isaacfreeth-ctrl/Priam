@@ -223,6 +223,12 @@ def create_excel_export(subsidiary_data, root_company_name):
     
     return wb
 
+# Initialize session state
+if 'selected_company' not in st.session_state:
+    st.session_state.selected_company = None
+if 'mapping_results' not in st.session_state:
+    st.session_state.mapping_results = None
+
 # Main UI
 st.sidebar.header("API Configuration")
 
@@ -273,61 +279,9 @@ if search_button and company_query:
                     
                     with col2:
                         if st.button("Map", key=f"map_{idx}"):
-                            with st.spinner("Building corporate structure..."):
-                                company_number = company.get('company_number')
-                                company_name = company.get('title')
-                                
-                                # Get company profile
-                                profile = get_ch_company_profile(company_number)
-                                
-                                structure = [{
-                                    'Level': 0,
-                                    'Parent Company': 'ROOT',
-                                    'Company Name': company_name,
-                                    'Jurisdiction': 'gb',
-                                    'Company Number': company_number,
-                                    'Status': company.get('company_status', 'Unknown'),
-                                    'Company Type': company.get('company_type', 'Unknown'),
-                                    'Connection Type': 'Root entity',
-                                    'Companies House URL': f"https://find-and-update.company-information.service.gov.uk/company/{company_number}"
-                                }]
-                                
-                                # Find related companies by officers
-                                st.info("🔍 Analyzing shared officers to identify potential group structure...")
-                                related = find_related_companies_by_officers(company_number, company_name)
-                                
-                                if related:
-                                    structure.extend(related)
-                                    
-                                    # Remove duplicates
-                                    seen = set()
-                                    unique_structure = []
-                                    for item in structure:
-                                        key = item['Company Number']
-                                        if key not in seen:
-                                            seen.add(key)
-                                            unique_structure.append(item)
-                                    
-                                    st.success(f"Found {len(unique_structure)} related entities")
-                                    
-                                    df = pd.DataFrame(unique_structure)
-                                    st.dataframe(df, use_container_width=True)
-                                    
-                                    wb = create_excel_export(unique_structure, company_name)
-                                    excel_buffer = io.BytesIO()
-                                    wb.save(excel_buffer)
-                                    excel_buffer.seek(0)
-                                    
-                                    st.download_button(
-                                        label="📥 Download Excel Report",
-                                        data=excel_buffer,
-                                        file_name=f"corporate_structure_{company_number}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                    )
-                                    
-                                    st.info("💡 Structure identified through shared officer analysis. This indicates potential group relationships but should be verified through official filings.")
-                                else:
-                                    st.warning("No related entities found through officer analysis. The company may be standalone or use different officer structures.")
+                            st.session_state.selected_company = company
+                            st.session_state.mapping_results = None
+                            st.rerun()
                     
                     st.divider()
             else:
@@ -339,6 +293,87 @@ if search_button and company_query:
             else:
                 companies = search_opencorporates(company_query, jurisdiction if jurisdiction else None)
                 st.info(f"Found {len(companies)} companies (OpenCorporates data)")
+
+# Process selected company mapping
+if st.session_state.selected_company:
+    company = st.session_state.selected_company
+    company_number = company.get('company_number')
+    company_name = company.get('title')
+    
+    st.subheader(f"Mapping: {company_name}")
+    
+    if st.session_state.mapping_results is None:
+        with st.spinner("Building corporate structure..."):
+            # Get company profile
+            profile = get_ch_company_profile(company_number)
+            
+            structure = [{
+                'Level': 0,
+                'Parent Company': 'ROOT',
+                'Company Name': company_name,
+                'Jurisdiction': 'gb',
+                'Company Number': company_number,
+                'Status': company.get('company_status', 'Unknown'),
+                'Company Type': company.get('company_type', 'Unknown'),
+                'Connection Type': 'Root entity',
+                'Companies House URL': f"https://find-and-update.company-information.service.gov.uk/company/{company_number}"
+            }]
+            
+            # Find related companies by officers
+            with st.spinner("🔍 Analyzing shared officers..."):
+                related = find_related_companies_by_officers(company_number, company_name)
+            
+            if related:
+                structure.extend(related)
+                
+                # Remove duplicates
+                seen = set()
+                unique_structure = []
+                for item in structure:
+                    key = item['Company Number']
+                    if key not in seen:
+                        seen.add(key)
+                        unique_structure.append(item)
+                
+                st.session_state.mapping_results = unique_structure
+            else:
+                st.session_state.mapping_results = structure
+    
+    # Display results
+    if st.session_state.mapping_results:
+        results = st.session_state.mapping_results
+        
+        if len(results) > 1:
+            st.success(f"Found {len(results)} related entities")
+        else:
+            st.info("No related entities found through officer analysis. The company may be standalone.")
+        
+        df = pd.DataFrame(results)
+        st.dataframe(df, use_container_width=True)
+        
+        # Excel export
+        wb = create_excel_export(results, company_name)
+        excel_buffer = io.BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.download_button(
+                label="📥 Download Excel Report",
+                data=excel_buffer,
+                file_name=f"corporate_structure_{company_number}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        with col2:
+            if st.button("🔄 New Search", use_container_width=True):
+                st.session_state.selected_company = None
+                st.session_state.mapping_results = None
+                st.rerun()
+        
+        if len(results) > 1:
+            st.info("💡 Structure identified through shared officer analysis. This indicates potential group relationships but should be verified through official filings.")
 
 else:
     st.info("👈 Enter a company name to begin")
